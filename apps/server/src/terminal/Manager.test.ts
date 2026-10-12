@@ -1774,6 +1774,22 @@ it.layer(
     }),
   );
 
+  it.effect("keeps reading and deleting history at an encoded path that already fit", () =>
+    Effect.gen(function* () {
+      const threadId = "x".repeat(120);
+      const { manager, logsDir } = yield* createManager();
+      const fs = yield* FileSystem.FileSystem;
+      const logPath = yield* historyLogPath(logsDir, threadId);
+      yield* fs.makeDirectory(logsDir, { recursive: true });
+      yield* fs.writeFileString(logPath, "before upgrade\n");
+
+      expect((yield* manager.open(openInput({ threadId }))).history).toBe("before upgrade\n");
+
+      yield* manager.close({ threadId, deleteHistory: true });
+      expect(yield* fs.exists(logPath)).toBe(false);
+    }),
+  );
+
   it.effect("closes all terminals for a thread when close omits terminalId", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter, logsDir } = yield* createManager();

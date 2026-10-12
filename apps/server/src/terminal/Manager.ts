@@ -1246,27 +1246,38 @@ function legacySafeThreadId(threadId: string): string {
   return threadId.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-function toSafeThreadId(threadId: string): string {
-  return `terminal_${toFileNamePart(threadId)}`;
-}
-
-function toSafeTerminalId(terminalId: string): string {
-  return toFileNamePart(terminalId);
-}
-
 const MAX_FILE_NAME_BYTES = 255;
 
-// Two parts at this length plus the prefix and extension stay under MAX_FILE_NAME_BYTES.
-const MAX_ENCODED_ID_LENGTH = 120;
+// Nested subagent thread ids can encode past the filename limit. Only those names switch to
+// hashed ids, so every name that already fit keeps its path. "." is outside the base64url
+// alphabet, so the two forms never collide.
+function historyThreadParts(threadId: string) {
+  return {
+    encoded: `terminal_${Base64Url.encode(threadId)}`,
+    hashed: `terminal_sha256.${hashId(threadId)}`,
+  };
+}
 
-// Long ids, such as nested subagent thread ids, are hashed instead. "." is outside the base64url
-// alphabet, so a hashed part never collides with an encoded one.
-function toFileNamePart(id: string): string {
-  const encoded = Base64Url.encode(id);
-  if (encoded.length <= MAX_ENCODED_ID_LENGTH) {
-    return encoded;
-  }
-  return `sha256.${NodeCrypto.createHash("sha256").update(id).digest("base64url")}`;
+function historyFileName(threadId: string, terminalId: string): string {
+  const { encoded, hashed } = historyThreadParts(threadId);
+  const encodedName = joinHistoryFileName(encoded, terminalId, Base64Url.encode);
+  return encodedName.length <= MAX_FILE_NAME_BYTES
+    ? encodedName
+    : joinHistoryFileName(hashed, terminalId, hashId);
+}
+
+function joinHistoryFileName(
+  threadPart: string,
+  terminalId: string,
+  toTerminalPart: (terminalId: string) => string,
+): string {
+  return terminalId === DEFAULT_TERMINAL_ID
+    ? `${threadPart}.log`
+    : `${threadPart}_${toTerminalPart(terminalId)}.log`;
+}
+
+function hashId(id: string): string {
+  return NodeCrypto.createHash("sha256").update(id).digest("base64url");
 }
 
 function toSessionKey(threadId: string, terminalId: string): string {
@@ -1617,13 +1628,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }
     });
 
-  const historyPath = (threadId: string, terminalId: string) => {
-    const threadPart = toSafeThreadId(threadId);
-    if (terminalId === DEFAULT_TERMINAL_ID) {
-      return path.join(logsDir, `${threadPart}.log`);
-    }
-    return path.join(logsDir, `${threadPart}_${toSafeTerminalId(terminalId)}.log`);
-  };
+  const historyPath = (threadId: string, terminalId: string) =>
+    path.join(logsDir, historyFileName(threadId, terminalId));
 
   const legacyHistoryName = (threadId: string) => `${legacySafeThreadId(threadId)}.log`;
   const legacyHistoryPath = (threadId: string) => path.join(logsDir, legacyHistoryName(threadId));
@@ -1944,16 +1950,15 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const deleteAllHistoryForThread = Effect.fn("terminal.deleteAllHistoryForThread")(function* (
     threadId: string,
   ) {
-    const threadPrefix = `${toSafeThreadId(threadId)}_`;
+    const threadParts = Object.values(historyThreadParts(threadId));
     const entries = yield* fileSystem
       .readDirectory(logsDir, { recursive: false })
       .pipe(Effect.orElseSucceed(() => [] as Array<string>));
     yield* Effect.forEach(
       entries.filter(
         (name) =>
-          name === `${toSafeThreadId(threadId)}.log` ||
           name === `${legacySafeThreadId(threadId)}.log` ||
-          name.startsWith(threadPrefix),
+          threadParts.some((part) => name === `${part}.log` || name.startsWith(`${part}_`)),
       ),
       (name) =>
         fileSystem.remove(path.join(logsDir, name), { force: true }).pipe(
