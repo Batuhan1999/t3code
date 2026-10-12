@@ -6,6 +6,8 @@
  *
  * @module TerminalManager
  */
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- history paths are built synchronously; Effect's Crypto digest is effectful.
+import * as NodeCrypto from "node:crypto";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
@@ -1245,11 +1247,26 @@ function legacySafeThreadId(threadId: string): string {
 }
 
 function toSafeThreadId(threadId: string): string {
-  return `terminal_${Base64Url.encode(threadId)}`;
+  return `terminal_${toFileNamePart(threadId)}`;
 }
 
 function toSafeTerminalId(terminalId: string): string {
-  return Base64Url.encode(terminalId);
+  return toFileNamePart(terminalId);
+}
+
+const MAX_FILE_NAME_BYTES = 255;
+
+// Two parts at this length plus the prefix and extension stay under MAX_FILE_NAME_BYTES.
+const MAX_ENCODED_ID_LENGTH = 120;
+
+// Long ids, such as nested subagent thread ids, are hashed instead. "." is outside the base64url
+// alphabet, so a hashed part never collides with an encoded one.
+function toFileNamePart(id: string): string {
+  const encoded = Base64Url.encode(id);
+  if (encoded.length <= MAX_ENCODED_ID_LENGTH) {
+    return encoded;
+  }
+  return `sha256.${NodeCrypto.createHash("sha256").update(id).digest("base64url")}`;
 }
 
 function toSessionKey(threadId: string, terminalId: string): string {
@@ -1608,8 +1625,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return path.join(logsDir, `${threadPart}_${toSafeTerminalId(terminalId)}.log`);
   };
 
-  const legacyHistoryPath = (threadId: string) =>
-    path.join(logsDir, `${legacySafeThreadId(threadId)}.log`);
+  const legacyHistoryName = (threadId: string) => `${legacySafeThreadId(threadId)}.log`;
+  const legacyHistoryPath = (threadId: string) => path.join(logsDir, legacyHistoryName(threadId));
+  // Ids this long could never have been written under the legacy name.
+  const hasLegacyHistoryPath = (threadId: string) =>
+    Buffer.byteLength(legacyHistoryName(threadId)) <= MAX_FILE_NAME_BYTES;
 
   const readManagerState = SynchronizedRef.get(managerStateRef);
 
@@ -1850,7 +1870,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       return history;
     }
 
-    if (terminalId !== DEFAULT_TERMINAL_ID) {
+    if (terminalId !== DEFAULT_TERMINAL_ID || !hasLegacyHistoryPath(threadId)) {
       return new BoundedTerminalHistory(historyLineLimit, "", historyByteLimit);
     }
 
@@ -1908,7 +1928,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         }),
       ),
     );
-    if (terminalId === DEFAULT_TERMINAL_ID) {
+    if (terminalId === DEFAULT_TERMINAL_ID && hasLegacyHistoryPath(threadId)) {
       yield* fileSystem.remove(legacyHistoryPath(threadId), { force: true }).pipe(
         Effect.catch((error) =>
           Effect.logWarning("failed to delete terminal history", {

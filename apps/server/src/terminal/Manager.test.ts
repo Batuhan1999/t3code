@@ -1747,6 +1747,33 @@ it.layer(
     }),
   );
 
+  it.effect.each([
+    {
+      label: "subagent",
+      threadId:
+        "thread:provider:claudeAgent:native-thread:provider-thread%3Aprovider%3AclaudeAgent%3Anative-thread%3Apending%253Arun%253Athread%253A9175fb53-52d7-4d4d-9be7-25a76cf84b91%253Aordinal%253A7%3Aad899ae84c7a131b0",
+    },
+    { label: "300-character", threadId: "x".repeat(300) },
+  ])("persists history for a $label thread id too long to encode into a filename", ({ threadId }) =>
+    Effect.gen(function* () {
+      const terminalId = "t".repeat(128);
+      const { manager, ptyAdapter, logsDir } = yield* createManager();
+      yield* manager.open(openInput({ threadId }));
+      yield* manager.open(openInput({ threadId, terminalId }));
+      ptyAdapter.processes[0]!.emitData("default\n");
+      ptyAdapter.processes[1]!.emitData("long\n");
+      yield* manager.close({ threadId });
+
+      expect((yield* manager.open(openInput({ threadId }))).history).toBe("default\n");
+      expect((yield* manager.open(openInput({ threadId, terminalId }))).history).toBe("long\n");
+
+      yield* manager.close({ threadId, deleteHistory: true });
+      expect(
+        yield* FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.readDirectory(logsDir))),
+      ).toEqual([]);
+    }),
+  );
+
   it.effect("closes all terminals for a thread when close omits terminalId", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter, logsDir } = yield* createManager();
