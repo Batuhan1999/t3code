@@ -6,8 +6,6 @@
  *
  * @module TerminalManager
  */
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- history paths are built synchronously; Effect's Crypto digest is effectful.
-import * as NodeCrypto from "node:crypto";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
@@ -52,6 +50,7 @@ import { acpRegistryManagedBinaryDirectories } from "@t3tools/provider-acp-regis
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as Equal from "effect/Equal";
@@ -1248,36 +1247,12 @@ function legacySafeThreadId(threadId: string): string {
 
 const MAX_FILE_NAME_BYTES = 255;
 
-// Nested subagent thread ids can encode past the filename limit. Only those names switch to
-// hashed ids, so every name that already fit keeps its path. "." is outside the base64url
-// alphabet, so the two forms never collide.
-function historyThreadParts(threadId: string) {
-  return {
-    encoded: `terminal_${Base64Url.encode(threadId)}`,
-    hashed: `terminal_sha256.${hashId(threadId)}`,
-  };
+function encodedHistoryThreadPart(threadId: string): string {
+  return `terminal_${Base64Url.encode(threadId)}`;
 }
 
-function historyFileName(threadId: string, terminalId: string): string {
-  const { encoded, hashed } = historyThreadParts(threadId);
-  const encodedName = joinHistoryFileName(encoded, terminalId, Base64Url.encode);
-  return encodedName.length <= MAX_FILE_NAME_BYTES
-    ? encodedName
-    : joinHistoryFileName(hashed, terminalId, hashId);
-}
-
-function joinHistoryFileName(
-  threadPart: string,
-  terminalId: string,
-  toTerminalPart: (terminalId: string) => string,
-): string {
-  return terminalId === DEFAULT_TERMINAL_ID
-    ? `${threadPart}.log`
-    : `${threadPart}_${toTerminalPart(terminalId)}.log`;
-}
-
-function hashId(id: string): string {
-  return NodeCrypto.createHash("sha256").update(id).digest("base64url");
+function joinHistoryFileName(threadPart: string, terminalPart: string | null): string {
+  return terminalPart === null ? `${threadPart}.log` : `${threadPart}_${terminalPart}.log`;
 }
 
 function toSessionKey(threadId: string, terminalId: string): string {
@@ -1510,6 +1485,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const crypto = yield* Crypto.Crypto;
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
 
@@ -1628,8 +1604,32 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }
     });
 
-  const historyPath = (threadId: string, terminalId: string) =>
-    path.join(logsDir, historyFileName(threadId, terminalId));
+  const hashId = (id: string) =>
+    crypto.digest("SHA-256", new TextEncoder().encode(id)).pipe(
+      Effect.map((digest) => Base64Url.encode(digest)),
+      Effect.orDie,
+    );
+  const hashedHistoryThreadPart = (threadId: string) =>
+    hashId(threadId).pipe(Effect.map((digest) => `terminal_sha256.${digest}`));
+
+  // Nested subagent thread ids can encode past the filename limit. Only those names switch to
+  // hashed ids, so every name that already fit keeps its path. "." is outside the base64url
+  // alphabet, so the two forms never collide.
+  const historyPath = Effect.fnUntraced(function* (threadId: string, terminalId: string) {
+    const isDefault = terminalId === DEFAULT_TERMINAL_ID;
+    const encodedName = joinHistoryFileName(
+      encodedHistoryThreadPart(threadId),
+      isDefault ? null : Base64Url.encode(terminalId),
+    );
+    if (encodedName.length <= MAX_FILE_NAME_BYTES) {
+      return path.join(logsDir, encodedName);
+    }
+    const hashedName = joinHistoryFileName(
+      yield* hashedHistoryThreadPart(threadId),
+      isDefault ? null : yield* hashId(terminalId),
+    );
+    return path.join(logsDir, hashedName);
+  });
 
   const legacyHistoryName = (threadId: string) => `${legacySafeThreadId(threadId)}.log`;
   const legacyHistoryPath = (threadId: string) => path.join(logsDir, legacyHistoryName(threadId));
@@ -1774,7 +1774,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }
 
       yield* fileSystem
-        .writeFileString(historyPath(threadId, terminalId), request.history.value())
+        .writeFileString(yield* historyPath(threadId, terminalId), request.history.value())
         .pipe(
           Effect.catch((error) =>
             Effect.logWarning("failed to persist terminal history", {
@@ -1845,7 +1845,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     threadId: string,
     terminalId: string,
   ) {
-    const nextPath = historyPath(threadId, terminalId);
+    const nextPath = yield* historyPath(threadId, terminalId);
     if (
       yield* fileSystem
         .exists(nextPath)
@@ -1925,7 +1925,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     threadId: string,
     terminalId: string,
   ) {
-    yield* fileSystem.remove(historyPath(threadId, terminalId), { force: true }).pipe(
+    yield* fileSystem.remove(yield* historyPath(threadId, terminalId), { force: true }).pipe(
       Effect.catch((error) =>
         Effect.logWarning("failed to delete terminal history", {
           threadId,
@@ -1950,7 +1950,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const deleteAllHistoryForThread = Effect.fn("terminal.deleteAllHistoryForThread")(function* (
     threadId: string,
   ) {
-    const threadParts = Object.values(historyThreadParts(threadId));
+    const threadParts = [
+      encodedHistoryThreadPart(threadId),
+      yield* hashedHistoryThreadPart(threadId),
+    ];
     const entries = yield* fileSystem
       .readDirectory(logsDir, { recursive: false })
       .pipe(Effect.orElseSucceed(() => [] as Array<string>));
