@@ -15,7 +15,6 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Data from "effect/Data";
 import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -273,7 +272,7 @@ const createManager = (
 ): Effect.Effect<
   ManagerFixture,
   PlatformError.PlatformError,
-  Crypto.Crypto | FileSystem.FileSystem | Path.Path | Scope.Scope | ProcessRunner.ProcessRunner
+  FileSystem.FileSystem | Path.Path | Scope.Scope | ProcessRunner.ProcessRunner
 > =>
   Effect.flatMap(Effect.service(FileSystem.FileSystem), (fs) =>
     Effect.gen(function* () {
@@ -1748,11 +1747,13 @@ it.layer(
       threadId:
         "thread:provider:claudeAgent:native-thread:provider-thread%3Aprovider%3AclaudeAgent%3Anative-thread%3Apending%253Arun%253Athread%253A9175fb53-52d7-4d4d-9be7-25a76cf84b91%253Aordinal%253A7%3Aad899ae84c7a131b0",
     },
+    // Also too long for the legacy `<sanitized id>.log` lookup.
     { label: "300-character", threadId: "x".repeat(300) },
   ])("persists history for a $label thread id too long to encode into a filename", ({ threadId }) =>
     Effect.gen(function* () {
       const terminalId = "t".repeat(128);
       const { manager, ptyAdapter, logsDir } = yield* createManager();
+      const fs = yield* FileSystem.FileSystem;
       yield* manager.open(openInput({ threadId }));
       yield* manager.open(openInput({ threadId, terminalId }));
       ptyAdapter.processes[0]!.emitData("default\n");
@@ -1763,9 +1764,7 @@ it.layer(
       expect((yield* manager.open(openInput({ threadId, terminalId }))).history).toBe("long\n");
 
       yield* manager.close({ threadId, deleteHistory: true });
-      expect(
-        yield* FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.readDirectory(logsDir))),
-      ).toEqual([]);
+      expect(yield* fs.readDirectory(logsDir)).toEqual([]);
     }),
   );
 
@@ -1779,9 +1778,13 @@ it.layer(
       yield* fs.writeFileString(logPath, "before upgrade\n");
 
       expect((yield* manager.open(openInput({ threadId }))).history).toBe("before upgrade\n");
+      // A long terminal id pushes only this terminal's name past the limit, so the thread's
+      // history is split across both forms and deleting the thread must remove both.
+      yield* manager.open(openInput({ threadId, terminalId: "t".repeat(128) }));
 
       yield* manager.close({ threadId, deleteHistory: true });
       expect(yield* fs.exists(logPath)).toBe(false);
+      expect(yield* fs.readDirectory(logsDir)).toEqual([]);
     }),
   );
 
