@@ -10,6 +10,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeOS from "node:os";
 import { vi } from "vite-plus/test";
 
@@ -176,31 +177,34 @@ describe("DesktopShellEnvironment", () => {
     }),
   );
 
-  it.live("imports the login-shell PATH when the profile floods stderr", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const home = yield* fileSystem.makeTempDirectoryScoped();
-      const shell = `${home}/noisy-shell`;
-      // More stderr than the OS pipe buffers hold, like a profile running under `set -x`.
-      yield* fileSystem.writeFileString(
-        shell,
-        [
-          "#!/bin/sh",
-          "head -c 1048576 /dev/zero >&2",
-          'PATH="/noisy/bin:/usr/bin:/bin"',
-          "export PATH",
-          'exec /bin/sh -c "$2"',
-        ].join("\n"),
-      );
-      yield* fileSystem.chmod(shell, 0o755);
-      const env: NodeJS.ProcessEnv = { SHELL: shell, HOME: home, PATH: "/usr/bin:/bin" };
+  // The fake login shell is a POSIX script.
+  it.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "imports the login-shell PATH when the profile floods stderr",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const home = yield* fileSystem.makeTempDirectoryScoped();
+        const shell = `${home}/noisy-shell`;
+        // More stderr than the OS pipe buffers hold, like a profile running under `set -x`.
+        yield* fileSystem.writeFileString(
+          shell,
+          [
+            "#!/bin/sh",
+            "head -c 1048576 /dev/zero >&2",
+            'PATH="/noisy/bin:/usr/bin:/bin"',
+            "export PATH",
+            'exec /bin/sh -c "$2"',
+          ].join("\n"),
+        );
+        yield* fileSystem.chmod(shell, 0o755);
+        const env: NodeJS.ProcessEnv = { SHELL: shell, HOME: home, PATH: "/usr/bin:/bin" };
 
-      yield* runShellEnvironment({ env, platform: "linux", userShell: shell }).pipe(
-        Effect.provide(Logger.layer([])),
-      );
+        yield* runShellEnvironment({ env, platform: "linux", userShell: shell }).pipe(
+          Effect.provide(Logger.layer([])),
+        );
 
-      assert.equal(env.PATH, "/noisy/bin:/usr/bin:/bin");
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+        assert.equal(env.PATH, "/noisy/bin:/usr/bin:/bin");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("does not mix login-shell locale categories into an inherited locale", () =>
