@@ -18,7 +18,12 @@ import {
   workEntryDisplayIndicatesToolFailure,
   type TimelineEntry,
 } from "../../session-logic";
-import { makeStreamingTimelineFixture } from "../../test-fixtures";
+import {
+  STREAMING_WORK_SHAPES,
+  makeStreamingTimelineFixture,
+  makeStreamingWorkTimelineFixture,
+  withStreamedText,
+} from "../../test-fixtures";
 import type { TurnDiffSummary } from "../../types";
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, MessageId, RunId } from "@t3tools/contracts";
@@ -3033,6 +3038,108 @@ describe("streaming v2 row projection", () => {
       })),
     });
   });
+
+  function streamWork(
+    shape: (typeof STREAMING_WORK_SHAPES)[number],
+    options: { readonly expanded?: boolean; readonly isWorking?: boolean } = {},
+  ) {
+    const source = makeStreamingWorkTimelineFixture(shape);
+    const isWorking = options.isWorking ?? true;
+    const rowsInput = (timelineEntries: ReadonlyArray<TimelineEntry>) => ({
+      timelineEntries,
+      latestRun: {
+        runId: source.runId,
+        status: isWorking ? ("running" as const) : ("completed" as const),
+        startedAt: source.time(5),
+        completedAt: isWorking ? null : source.time(30),
+      },
+      runningRunId: isWorking ? source.runId : null,
+      isWorking,
+      activeTurnStartedAt: source.time(5),
+      turnDiffSummaries: [],
+      supportsConversationRollback: true,
+      // Settled thinking stays visible, where its text becomes the row label.
+      expandedRunIds: new Set(isWorking ? [] : [source.runId]),
+      expandedWorkGroupIds: new Set(
+        options.expanded ? ["work-group:live-work", "work-group:live-thinking"] : [],
+      ),
+    });
+    let timelineInput = { visibleTurnItems: source.visibleTurnItems, optimisticMessages: [] };
+    let timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState(timelineInput);
+    let projection = deriveMessagesTimelineRowsWithState(rowsInput(timeline.entries));
+    // Each step streams text, then checks the patched rows against a from-scratch derivation.
+    const step = (text: string, updatedAt: string, complete = false) => {
+      const previous = projection;
+      const streamed = withStreamedText(
+        timelineInput.visibleTurnItems,
+        source.streamingItemId,
+        text,
+        updatedAt,
+      );
+      timelineInput = {
+        ...timelineInput,
+        visibleTurnItems: complete
+          ? streamed.map((row) =>
+              row.item.id === source.streamingItemId
+                ? { ...row, item: { ...row.item, streaming: false, status: "completed" as const } }
+                : row,
+            )
+          : streamed,
+      };
+      timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState(timelineInput, timeline);
+      projection = deriveMessagesTimelineRowsWithState(rowsInput(timeline.entries), previous);
+      expect(projection.rows).toEqual(
+        deriveMessagesTimelineRows(
+          rowsInput(deriveTimelineEntriesFromVisibleTurnItems(timelineInput)),
+        ),
+      );
+      return { previous: previous.rows, next: projection.rows };
+    };
+    return { source, step };
+  }
+
+  function rowHoldsEntry(row: MessagesTimelineRow, entryId: string): boolean {
+    if (row.id === entryId) return true;
+    if (row.kind !== "work" && row.kind !== "work-live") return false;
+    return row.groupedEntries.some((entry) => entry.id === entryId);
+  }
+
+  it.each(
+    STREAMING_WORK_SHAPES.flatMap((shape) => [[shape, false] as const, [shape, true] as const]),
+  )("updates only the row holding streaming %s text (expanded: %s)", (shape, expanded) => {
+    const { source, step } = streamWork(shape, { expanded });
+    // The first non-blank text makes thinking visible, which regroups rows.
+    step("Let", source.time(20));
+    for (const [index, text] of ["Let me", "Let me check", "Let me check the tests"].entries()) {
+      const { previous, next } = step(text, source.time(21 + index));
+      expect(next).toHaveLength(previous.length);
+      let changed = 0;
+      for (const [rowIndex, row] of previous.entries()) {
+        if (rowHoldsEntry(row, source.streamingItemId)) {
+          expect(next[rowIndex]).not.toBe(row);
+          changed += 1;
+        } else {
+          expect(next[rowIndex]).toBe(row);
+        }
+      }
+      expect(changed).toBe(shape === "plan" || !expanded ? 1 : 2);
+    }
+  });
+
+  it.each(STREAMING_WORK_SHAPES)(
+    "keeps row parity when %s text turns blank, completes, or streams outside a live row",
+    (shape) => {
+      const live = streamWork(shape);
+      for (const [index, text] of ["Let", " \n", "", "Back again"].entries()) {
+        live.step(text, live.source.time(20 + index));
+      }
+      live.step("Back again", live.source.time(25), true);
+      const idle = streamWork(shape, { isWorking: false });
+      for (const [index, text] of ["Let", "Let me", "Let me check"].entries()) {
+        idle.step(text, idle.source.time(20 + index));
+      }
+    },
+  );
 });
 
 describe("linked timeline resources", () => {

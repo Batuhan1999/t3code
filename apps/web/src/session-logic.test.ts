@@ -41,7 +41,13 @@ import {
   workEntryDisplayIndicatesToolFailure,
   workEntryIndicatesToolSuccess,
 } from "./session-logic";
-import { makeStreamingTimelineFixture, makeThreadProjectionFixture } from "./test-fixtures";
+import {
+  STREAMING_WORK_SHAPES,
+  makeStreamingTimelineFixture,
+  makeStreamingWorkTimelineFixture,
+  makeThreadProjectionFixture,
+  withStreamedText,
+} from "./test-fixtures";
 import type { ChatMessage } from "./types";
 
 describe("V2 session presentation", () => {
@@ -1737,6 +1743,75 @@ describe("incremental v2 timeline entries", () => {
       "live-assistant",
     ]);
   });
+
+  it.each(STREAMING_WORK_SHAPES)(
+    "patches only the streaming entry for %s text deltas and matches a full rebuild",
+    (shape) => {
+      const fixture = makeStreamingWorkTimelineFixture(shape);
+      let input = { visibleTurnItems: fixture.visibleTurnItems, optimisticMessages: [] };
+      let projection = deriveTimelineEntriesFromVisibleTurnItemsWithState(input);
+      for (const [step, text] of ["Let", "Let me", " \n", "Let me check the tests"].entries()) {
+        input = {
+          ...input,
+          visibleTurnItems: withStreamedText(
+            input.visibleTurnItems,
+            fixture.streamingItemId,
+            text,
+            fixture.time(20 + step),
+          ),
+        };
+        const previous = projection;
+        projection = deriveTimelineEntriesFromVisibleTurnItemsWithState(input, previous);
+        expect(projection.entries).toEqual(deriveTimelineEntriesFromVisibleTurnItems(input));
+        for (const [index, entry] of previous.entries.entries()) {
+          if (entry.id === fixture.streamingItemId) {
+            expect(projection.entries[index]).not.toBe(entry);
+          } else {
+            expect(projection.entries[index]).toBe(entry);
+          }
+        }
+      }
+    },
+  );
+
+  it.each(["completion", "title", "ordering", "run"] as const)(
+    "rebuilds streaming thinking and plans for a %s change",
+    (change) => {
+      for (const shape of ["grouped", "plan"] as const) {
+        const fixture = makeStreamingWorkTimelineFixture(shape);
+        const visibleTurnItems = withStreamedText(
+          fixture.visibleTurnItems,
+          fixture.streamingItemId,
+          "Partial",
+          fixture.time(20),
+        );
+        const input = { visibleTurnItems, optimisticMessages: [] };
+        const previous = deriveTimelineEntriesFromVisibleTurnItemsWithState(input);
+        const nextInput = {
+          ...input,
+          visibleTurnItems: visibleTurnItems.map((row) =>
+            row.item.id !== fixture.streamingItemId
+              ? row
+              : {
+                  ...row,
+                  item: {
+                    ...row.item,
+                    ...(change === "completion"
+                      ? { streaming: false, status: "completed" as const }
+                      : change === "title"
+                        ? { title: "Planning the fix" }
+                        : change === "ordering"
+                          ? { startedAt: DateTime.makeUnsafe(fixture.time(0)) }
+                          : { runId: fixture.historyRunId }),
+                  },
+                },
+          ),
+        };
+        const next = deriveTimelineEntriesFromVisibleTurnItemsWithState(nextInput, previous);
+        expect(next.entries).toEqual(deriveTimelineEntriesFromVisibleTurnItems(nextInput));
+      }
+    },
+  );
 });
 
 describe("image asset requests", () => {

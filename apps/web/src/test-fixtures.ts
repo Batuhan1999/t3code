@@ -2,6 +2,7 @@ import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   EnvironmentId,
   MessageId,
+  PlanId,
   RunId,
   TurnItemId,
   type OrchestrationV2ProjectedTurnItem,
@@ -219,5 +220,85 @@ export function makeStreamingTimelineFixture(text = "") {
     sourceItemId: item.id,
     item,
   }));
-  return { threadId, runId, historyRunId, visibleTurnItems, time };
+  return { threadId, runId, historyRunId, visibleTurnItems, time, base };
+}
+
+export const STREAMING_WORK_SHAPES = ["grouped", "standalone", "settled", "plan", "turns"] as const;
+
+/**
+ * A live turn that ends in streaming thinking or a streaming plan instead of
+ * assistant text: after a tool call, alone, superseded by a running tool, as a
+ * proposed plan, or after an earlier turn that also thought.
+ */
+export function makeStreamingWorkTimelineFixture(shape: (typeof STREAMING_WORK_SHAPES)[number]) {
+  const fixture = makeStreamingTimelineFixture();
+  const { base, runId, historyRunId, threadId } = fixture;
+  const running = { status: "running", completedAt: null } as const;
+  const thought = (id: string, run: RunId, second: number, text: string) =>
+    ({
+      ...base(id, run, second),
+      type: "reasoning",
+      text,
+      streaming: run === runId,
+      ...(run === runId ? running : {}),
+    }) satisfies OrchestrationV2TurnItem;
+  const streamingItem: OrchestrationV2TurnItem =
+    shape === "plan"
+      ? {
+          ...base("live-plan", runId, 8),
+          ...running,
+          type: "proposed_plan",
+          planId: PlanId.make("live-plan"),
+          markdown: "",
+          streaming: true,
+        }
+      : thought("live-thinking", runId, 8, "");
+  const items = fixture.visibleTurnItems
+    .map((row) => row.item)
+    .filter(
+      (item) =>
+        item.id !== "live-assistant-item" && (shape !== "standalone" || item.id !== "live-work"),
+    );
+  if (shape === "turns")
+    items.splice(2, 0, thought("history-thinking", historyRunId, 2, "Earlier"));
+  items.push(streamingItem);
+  if (shape === "settled") {
+    items.push({
+      ...base("live-running-tool", runId, 9),
+      ...running,
+      type: "dynamic_tool",
+      toolName: "read_file",
+      input: { path: "/repo/README.md" },
+    });
+  }
+  const visibleTurnItems: OrchestrationV2ProjectedTurnItem[] = items.map((item, position) => ({
+    position,
+    visibility: "local",
+    sourceThreadId: threadId,
+    sourceItemId: item.id,
+    item,
+  }));
+  return { ...fixture, visibleTurnItems, streamingItemId: streamingItem.id };
+}
+
+/** One coalesced provider flush: only the streamed text and `updatedAt` change. */
+export function withStreamedText(
+  rows: ReadonlyArray<OrchestrationV2ProjectedTurnItem>,
+  itemId: string,
+  text: string,
+  updatedAt: string,
+): OrchestrationV2ProjectedTurnItem[] {
+  return rows.map((row) => {
+    if (row.item.id !== itemId) return row;
+    const updated = DateTime.makeUnsafe(updatedAt);
+    return {
+      ...row,
+      item:
+        row.item.type === "proposed_plan"
+          ? { ...row.item, markdown: text, updatedAt: updated }
+          : row.item.type === "reasoning" || row.item.type === "assistant_message"
+            ? { ...row.item, text, updatedAt: updated }
+            : row.item,
+    };
+  });
 }
