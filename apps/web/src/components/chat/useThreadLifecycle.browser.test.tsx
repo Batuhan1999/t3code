@@ -142,6 +142,13 @@ it("keeps a branch restore in one thread from blocking or refocusing the next th
     expect.objectContaining({ input: { cwd: "/repo", refName: "feature-b" } }),
   );
 
+  // Back on thread A, its own restore is still pending, so it can't start a second one.
+  currentRouteThreadKeyRef.current = threadA.routeThreadKey;
+  await screen.rerender(harness(threadA));
+  await expect.element(page.getByRole("button", { name: "Restoring..." })).toBeDisabled();
+  currentRouteThreadKeyRef.current = threadB.routeThreadKey;
+  await screen.rerender(harness(threadB));
+
   finishThreadA({ _tag: "Success", value: { refName: "feature-a" } });
   await vi.waitFor(() => expect(refreshGitStatus).toHaveBeenCalledOnce());
   expect(scheduleComposerFocus).not.toHaveBeenCalled();

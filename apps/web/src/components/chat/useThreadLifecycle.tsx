@@ -294,11 +294,13 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     setUnsnoozingThreadKey((current) => (current === threadKey ? null : current));
   };
   const handleUnsnoozeActiveThreadStable = useStableCallback(handleUnsnoozeActiveThread);
-  // ChatView stays mounted across server threads, so an in-flight restore is keyed to
-  // the thread that started it.
-  const [restoringBranchThreadKey, setRestoringBranchThreadKey] = useState<string | null>(null);
+  // ChatView stays mounted across server threads, so in-flight restores are tracked per
+  // thread; each thread keeps its guard until its own restore finishes.
+  const [restoringBranchThreadKeys, setRestoringBranchThreadKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const isRestoringThreadBranch =
-    restoringBranchThreadKey !== null && restoringBranchThreadKey === activeThreadKey;
+    activeThreadKey !== null && restoringBranchThreadKeys.has(activeThreadKey);
   const [revealedBranchMismatchKey, setRevealedBranchMismatchKey] = useState<string | null>(null);
   const [, setBranchMismatchDismissTick] = useState(0);
   const composerHasDraftContent = useComposerDraftStore((store) =>
@@ -335,8 +337,12 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     }
     const threadKey = scopedThreadKey(scopeThreadRef(environmentId, activeThread.id));
     const finishRestore = () =>
-      setRestoringBranchThreadKey((current) => (current === threadKey ? null : current));
-    setRestoringBranchThreadKey(threadKey);
+      setRestoringBranchThreadKeys((current) => {
+        const next = new Set(current);
+        next.delete(threadKey);
+        return next;
+      });
+    setRestoringBranchThreadKeys((current) => new Set(current).add(threadKey));
     const checkoutResult = await switchGitRef({
       environmentId,
       input: {
