@@ -7,7 +7,7 @@ import "~/index.css";
 
 import { act, render } from "../../../test/render";
 import { MessagesTimeline } from "./MessagesTimeline";
-import { remarkThoughtPreview } from "./TimelineWorkEntryRow.logic";
+import { remarkThoughtPreview, thoughtPreviewSource } from "./TimelineWorkEntryRow.logic";
 import { parseMarkdownWithMath } from "@t3tools/shared/markdownMath";
 import { collectThreadFindRanges } from "./threadFindHighlights";
 
@@ -369,6 +369,11 @@ describe("MessagesTimeline agent messages", () => {
 });
 
 describe("MessagesTimeline live reasoning", () => {
+  it("never cuts the label source inside an emoji", () => {
+    const source = thoughtPreviewSource(`${"a".repeat(1_499)}🙂 and more`);
+    expect(source).toBe("a".repeat(1_499));
+  });
+
   it("labels an expanded live thought from its opening instead of the whole trace", async () => {
     const runId = RunId.make("thinking-run");
     const trace = `Checking the **parser** first. ${"Then the next file. ".repeat(1_000)}`;
@@ -394,12 +399,13 @@ describe("MessagesTimeline live reasoning", () => {
     );
     const row = () => screen.container.querySelector<HTMLElement>("button[aria-expanded]")!;
     await click(row());
-    await vi.waitFor(() => expect(row().getAttribute("aria-expanded")).toBe("true"));
-
-    const label = row().textContent ?? "";
-    expect(label.startsWith("Checking the parser first. Then the next file.")).toBe(true);
-    // The label is one truncated line, so streaming a long trace must not flatten all of it.
-    expect(label.length).toBeLessThan(trace.length / 4);
+    await vi.waitFor(() => {
+      expect(row().getAttribute("aria-expanded")).toBe("true");
+      const label = row().textContent ?? "";
+      expect(label.startsWith("Checking the parser first. Then the next file.")).toBe(true);
+      // The label is one truncated line, so streaming a long trace must not flatten all of it.
+      expect(label.length).toBeLessThan(trace.length / 4);
+    });
   });
 });
 

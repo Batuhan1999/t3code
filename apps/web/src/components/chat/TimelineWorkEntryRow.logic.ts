@@ -190,7 +190,8 @@ export function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconNa
 
 /** The preview is one truncated line; bound parsing work while long traces stream. */
 export function thoughtPreviewSource(markdown: string): string {
-  return markdown.slice(0, 1_500);
+  // Drop a lone high surrogate so the cut never leaves half of an emoji.
+  return markdown.slice(0, 1_500).replace(/[\uD800-\uDBFF]$/, "");
 }
 
 /** Compact reasoning keeps formulas while flattening other Markdown into label text. */
