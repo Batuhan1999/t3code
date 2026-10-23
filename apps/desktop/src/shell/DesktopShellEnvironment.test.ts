@@ -187,7 +187,7 @@ describe("DesktopShellEnvironment", () => {
         [
           "#!/bin/sh",
           "head -c 1048576 /dev/zero >&2",
-          'PATH="/noisy/bin:$PATH"',
+          'PATH="/noisy/bin:/usr/bin:/bin"',
           "export PATH",
           'exec /bin/sh -c "$2"',
         ].join("\n"),
