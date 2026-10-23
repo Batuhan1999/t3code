@@ -188,6 +188,11 @@ export function workEntryIconName(workEntry: TimelineWorkEntry): WorkEntryIconNa
   return workToneIcon(workEntry.tone).iconName;
 }
 
+/** The preview is one truncated line; bound parsing work while long traces stream. */
+export function thoughtPreviewSource(markdown: string): string {
+  return markdown.slice(0, 1_500);
+}
+
 /** Compact reasoning keeps formulas while flattening other Markdown into label text. */
 export function remarkThoughtPreview(fallback: string) {
   return (tree: Root) => {
