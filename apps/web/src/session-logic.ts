@@ -1010,6 +1010,19 @@ function patchStreamedEntry(
   return entry;
 }
 
+/** Entries read only each plan's status; streaming plans rebuild artifacts with every delta. */
+function samePlanStatuses(
+  next: TimelineEntriesInput["plans"],
+  previous: TimelineEntriesInput["plans"],
+): boolean {
+  if (next === previous) return true;
+  if (next === undefined || previous === undefined || next.length !== previous.length) return false;
+  return next.every((plan, index) => {
+    const before = previous[index]!;
+    return plan.id === before.id && plan.kind === before.kind && plan.status === before.status;
+  });
+}
+
 function reuseTimelineEntries(
   input: TimelineEntriesInput,
   previous: TimelineEntriesProjection,
@@ -1022,7 +1035,7 @@ function reuseTimelineEntries(
     !shallow(input.attachmentUrlById, before.attachmentUrlById) ||
     !shallow(input.attempts, before.attempts) ||
     !shallow(input.nodes, before.nodes) ||
-    !shallow(input.plans, before.plans)
+    !samePlanStatuses(input.plans, before.plans)
   ) {
     return null;
   }

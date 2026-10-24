@@ -3157,6 +3157,99 @@ describe("streaming v2 row projection", () => {
       }
     },
   );
+
+  it.each([
+    "expanded live group",
+    "thinking superseded by a running tool",
+    "settled turn",
+  ] as const)("matches a full derivation when streaming thinking sits in a %s", (scenario) => {
+    const source = makeStreamingWorkTimelineFixture("reasoning");
+    const running = scenario !== "settled turn";
+    const rowsInput = (
+      timelineEntries: ReadonlyArray<TimelineEntry>,
+      expandedWorkGroupIds?: ReadonlySet<string>,
+    ) => ({
+      timelineEntries,
+      latestRun: {
+        runId: source.runId,
+        status: running ? ("running" as const) : ("completed" as const),
+        startedAt: source.time(5),
+        completedAt: running ? null : source.time(40),
+      },
+      runningRunId: running ? source.runId : null,
+      isWorking: running,
+      activeTurnStartedAt: source.time(5),
+      turnDiffSummaries: [],
+      supportsConversationRollback: true,
+      ...(expandedWorkGroupIds ? { expandedWorkGroupIds } : {}),
+      ...(running ? {} : { expandedRunIds: new Set([source.runId]) }),
+    });
+    const tool = source.visibleTurnItems.find((row) => row.item.id === "live-work")!;
+    let visibleTurnItems =
+      scenario === "thinking superseded by a running tool"
+        ? [
+            ...source.visibleTurnItems,
+            {
+              ...tool,
+              position: source.visibleTurnItems.length,
+              sourceItemId: TurnItemId.make("live-running-tool"),
+              item: {
+                ...tool.item,
+                id: TurnItemId.make("live-running-tool"),
+                ordinal: 8,
+                status: "running" as const,
+                completedAt: null,
+              },
+            },
+          ]
+        : // Alone in a settled group, the thought's text becomes the group summary.
+          source.visibleTurnItems.filter((row) => running || row !== tool);
+    visibleTurnItems = withStreamedText(
+      visibleTurnItems,
+      source.streamingItemId,
+      "Let",
+      source.time(20),
+    );
+    let timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState({
+      visibleTurnItems,
+      optimisticMessages: [],
+    });
+    const liveRow = deriveMessagesTimelineRows(rowsInput(timeline.entries)).find(
+      (row) => row.kind === "work-live",
+    );
+    const expanded =
+      scenario === "expanded live group" && liveRow?.kind === "work-live"
+        ? new Set([liveRow.groupId])
+        : undefined;
+    let projection = deriveMessagesTimelineRowsWithState(rowsInput(timeline.entries, expanded));
+    for (const [step, text] of ["Let me", "Let me check the tests"].entries()) {
+      visibleTurnItems = withStreamedText(
+        visibleTurnItems,
+        source.streamingItemId,
+        text,
+        source.time(21 + step),
+      );
+      const timelineInput = { visibleTurnItems, optimisticMessages: [] };
+      const previous = projection;
+      timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState(timelineInput, timeline);
+      projection = deriveMessagesTimelineRowsWithState(
+        rowsInput(timeline.entries, expanded),
+        previous,
+      );
+      expect(projection.rows).toEqual(
+        deriveMessagesTimelineRows(
+          rowsInput(deriveTimelineEntriesFromVisibleTurnItems(timelineInput), expanded),
+        ),
+      );
+      if (!running) continue;
+      for (const [index, row] of previous.rows.entries()) {
+        const holdsItem =
+          (row.kind === "work" || row.kind === "work-live") &&
+          row.groupedEntries.some((entry) => entry.id === source.streamingItemId);
+        if (!holdsItem) expect(projection.rows[index]).toBe(row);
+      }
+    }
+  });
 });
 
 describe("linked timeline resources", () => {
