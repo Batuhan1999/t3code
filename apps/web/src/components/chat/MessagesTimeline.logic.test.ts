@@ -18,7 +18,11 @@ import {
   workEntryDisplayIndicatesToolFailure,
   type TimelineEntry,
 } from "../../session-logic";
-import { makeStreamingTimelineFixture } from "../../test-fixtures";
+import {
+  makeStreamingTimelineFixture,
+  makeStreamingWorkTimelineFixture,
+  withStreamedText,
+} from "../../test-fixtures";
 import type { TurnDiffSummary } from "../../types";
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, MessageId, RunId } from "@t3tools/contracts";
@@ -3033,6 +3037,65 @@ describe("streaming v2 row projection", () => {
       })),
     });
   });
+
+  it.each(["reasoning", "proposed_plan"] as const)(
+    "keeps every row not holding streaming %s text when it changes",
+    (kind) => {
+      const source = makeStreamingWorkTimelineFixture(kind);
+      const rowsInput = (timelineEntries: ReadonlyArray<TimelineEntry>) => ({
+        timelineEntries,
+        latestRun: {
+          runId: source.runId,
+          status: "running" as const,
+          startedAt: source.time(5),
+          completedAt: null,
+        },
+        runningRunId: source.runId,
+        isWorking: true,
+        activeTurnStartedAt: source.time(5),
+        turnDiffSummaries: [],
+        supportsConversationRollback: true,
+      });
+      let timelineInput = {
+        visibleTurnItems: withStreamedText(
+          source.visibleTurnItems,
+          source.streamingItemId,
+          "Let",
+          source.time(20),
+        ),
+        optimisticMessages: [],
+      };
+      let timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState(timelineInput);
+      let projection = deriveMessagesTimelineRowsWithState(rowsInput(timeline.entries));
+      for (const [step, text] of ["Let me", "Let me check the tests"].entries()) {
+        timelineInput = {
+          visibleTurnItems: withStreamedText(
+            timelineInput.visibleTurnItems,
+            source.streamingItemId,
+            text,
+            source.time(21 + step),
+          ),
+          optimisticMessages: [],
+        };
+        const previous = projection;
+        timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState(timelineInput, timeline);
+        projection = deriveMessagesTimelineRowsWithState(rowsInput(timeline.entries), previous);
+        expect(projection.rows).toEqual(
+          deriveMessagesTimelineRows(
+            rowsInput(deriveTimelineEntriesFromVisibleTurnItems(timelineInput)),
+          ),
+        );
+        expect(projection.rows).toHaveLength(previous.rows.length);
+        for (const [index, row] of previous.rows.entries()) {
+          const holdsItem =
+            row.id === source.streamingItemId ||
+            ((row.kind === "work" || row.kind === "work-live") &&
+              row.groupedEntries.some((entry) => entry.id === source.streamingItemId));
+          if (!holdsItem) expect(projection.rows[index]).toBe(row);
+        }
+      }
+    },
+  );
 });
 
 describe("linked timeline resources", () => {

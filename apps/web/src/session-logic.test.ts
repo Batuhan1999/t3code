@@ -41,7 +41,12 @@ import {
   workEntryDisplayIndicatesToolFailure,
   workEntryIndicatesToolSuccess,
 } from "./session-logic";
-import { makeStreamingTimelineFixture, makeThreadProjectionFixture } from "./test-fixtures";
+import {
+  makeStreamingTimelineFixture,
+  makeStreamingWorkTimelineFixture,
+  makeThreadProjectionFixture,
+  withStreamedText,
+} from "./test-fixtures";
 import type { ChatMessage } from "./types";
 
 describe("V2 session presentation", () => {
@@ -1737,6 +1742,40 @@ describe("incremental v2 timeline entries", () => {
       "live-assistant",
     ]);
   });
+
+  it.each(["reasoning", "proposed_plan"] as const)(
+    "keeps every other entry when streaming %s text changes",
+    (kind) => {
+      const fixture = makeStreamingWorkTimelineFixture(kind);
+      let input = {
+        visibleTurnItems: withStreamedText(
+          fixture.visibleTurnItems,
+          fixture.streamingItemId,
+          "Let",
+          fixture.time(20),
+        ),
+        optimisticMessages: [],
+      };
+      let projection = deriveTimelineEntriesFromVisibleTurnItemsWithState(input);
+      for (const [step, text] of ["Let me", "Let me check the tests"].entries()) {
+        input = {
+          visibleTurnItems: withStreamedText(
+            input.visibleTurnItems,
+            fixture.streamingItemId,
+            text,
+            fixture.time(21 + step),
+          ),
+          optimisticMessages: [],
+        };
+        const previous = projection;
+        projection = deriveTimelineEntriesFromVisibleTurnItemsWithState(input, previous);
+        expect(projection.entries).toEqual(deriveTimelineEntriesFromVisibleTurnItems(input));
+        for (const [index, entry] of previous.entries.entries()) {
+          if (entry.id !== fixture.streamingItemId) expect(projection.entries[index]).toBe(entry);
+        }
+      }
+    },
+  );
 });
 
 describe("image asset requests", () => {
