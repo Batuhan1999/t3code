@@ -3096,6 +3096,67 @@ describe("streaming v2 row projection", () => {
       }
     },
   );
+
+  it.each(["reasoning", "proposed_plan"] as const)(
+    "matches a full derivation when streaming %s text turns blank or completes",
+    (kind) => {
+      const source = makeStreamingWorkTimelineFixture(kind);
+      const rowsInput = (timelineEntries: ReadonlyArray<TimelineEntry>) => ({
+        timelineEntries,
+        latestRun: {
+          runId: source.runId,
+          status: "running" as const,
+          startedAt: source.time(5),
+          completedAt: null,
+        },
+        runningRunId: source.runId,
+        isWorking: true,
+        activeTurnStartedAt: source.time(5),
+        turnDiffSummaries: [],
+        supportsConversationRollback: true,
+      });
+      let visibleTurnItems = source.visibleTurnItems;
+      let timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState({
+        visibleTurnItems,
+        optimisticMessages: [],
+      });
+      let projection = deriveMessagesTimelineRowsWithState(rowsInput(timeline.entries));
+      const steps = [
+        ...["Let", " ", "Let me"].map(
+          (text, step) => (rows: typeof visibleTurnItems) =>
+            withStreamedText(rows, source.streamingItemId, text, source.time(20 + step)),
+        ),
+        (rows: typeof visibleTurnItems) =>
+          rows.map((row) =>
+            row.item.id === source.streamingItemId &&
+            (row.item.type === "reasoning" || row.item.type === "proposed_plan")
+              ? {
+                  ...row,
+                  item: {
+                    ...row.item,
+                    status: "completed" as const,
+                    streaming: false,
+                    completedAt: DateTime.makeUnsafe(source.time(30)),
+                    updatedAt: DateTime.makeUnsafe(source.time(30)),
+                  },
+                }
+              : row,
+          ),
+      ];
+      for (const step of steps) {
+        visibleTurnItems = step(visibleTurnItems);
+        const timelineInput = { visibleTurnItems, optimisticMessages: [] };
+        timeline = deriveTimelineEntriesFromVisibleTurnItemsWithState(timelineInput, timeline);
+        expect(timeline.entries).toEqual(deriveTimelineEntriesFromVisibleTurnItems(timelineInput));
+        projection = deriveMessagesTimelineRowsWithState(rowsInput(timeline.entries), projection);
+        expect(projection.rows).toEqual(
+          deriveMessagesTimelineRows(
+            rowsInput(deriveTimelineEntriesFromVisibleTurnItems(timelineInput)),
+          ),
+        );
+      }
+    },
+  );
 });
 
 describe("linked timeline resources", () => {
