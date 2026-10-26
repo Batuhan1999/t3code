@@ -101,7 +101,6 @@ interface ThreadLifecycleInput {
   readonly clearUsageLimitsFor: (threadKey: string) => void;
   readonly beginLocalDispatch: LocalDispatchState["beginLocalDispatch"];
   readonly resetLocalDispatch: LocalDispatchState["resetLocalDispatch"];
-  readonly scheduleComposerFocus: () => void;
   readonly scrollToEnd: (animated?: boolean) => void;
   readonly persistThreadSettingsForNextTurn: (input: {
     threadId: ThreadId;
@@ -148,7 +147,6 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     clearUsageLimitsFor,
     beginLocalDispatch,
     resetLocalDispatch,
-    scheduleComposerFocus,
     scrollToEnd,
     persistThreadSettingsForNextTurn,
   } = input;
@@ -394,7 +392,11 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     }
     gitStatusQuery.refresh();
     finishRestore();
-    if (currentRouteThreadKeyRef.current === routeThreadKey) scheduleComposerFocus();
+    if (currentRouteThreadKeyRef.current === routeThreadKey) {
+      window.requestAnimationFrame(() => {
+        if (currentRouteThreadKeyRef.current === routeThreadKey) composerRef.current?.focusAtEnd();
+      });
+    }
   };
   const handleSwitchCheckoutToThreadStable = useStableCallback(() => {
     void handleSwitchCheckoutToThread();

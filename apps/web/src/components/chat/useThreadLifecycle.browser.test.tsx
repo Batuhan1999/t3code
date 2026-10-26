@@ -62,7 +62,7 @@ function RestoreBranchHarness(props: {
   readonly thread: ThreadInput;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
   readonly refreshGitStatus: () => void;
-  readonly scheduleComposerFocus: () => void;
+  readonly focusComposer: () => void;
 }) {
   const lifecycle = useThreadLifecycle({
     ...props.thread,
@@ -81,7 +81,7 @@ function RestoreBranchHarness(props: {
     activePendingUserInput: null as never,
     gitStatusQuery: { refresh: props.refreshGitStatus },
     nowMinute: "",
-    composerRef: { current: null } as never,
+    composerRef: { current: { focusAtEnd: props.focusComposer } } as never,
     composerDraftTarget: { kind: "thread", ref: props.thread.activeThreadRef } as never,
     sendInFlightRef: { current: false },
     setOptimisticUserMessages: () => undefined,
@@ -89,7 +89,6 @@ function RestoreBranchHarness(props: {
     clearUsageLimitsFor: () => undefined,
     beginLocalDispatch: () => undefined,
     resetLocalDispatch: () => undefined,
-    scheduleComposerFocus: props.scheduleComposerFocus,
     scrollToEnd: () => undefined,
     persistThreadSettingsForNextTurn: async () => ({ _tag: "Success", value: undefined }) as never,
   });
@@ -104,9 +103,10 @@ function RestoreBranchHarness(props: {
   );
 }
 
-it.each(["a", "b"] as const)(
-  "isolates overlapping restores when thread %s finishes first",
-  async (first) => {
+it.each(["a", "b", "navigation"] as const)(
+  "isolates restore completion and queued focus for %s",
+  async (scenario) => {
+    const first = scenario === "b" ? "b" : "a";
     setup();
     const completions: Array<(result: unknown) => void> = [];
     const switchRef = vi.fn(() => new Promise<unknown>((resolve) => completions.push(resolve)));
@@ -115,16 +115,21 @@ it.each(["a", "b"] as const)(
     const threadB = threadInput("thread:b", "feature-b");
     const currentRouteThreadKeyRef = { current: threadA.routeThreadKey };
     const refreshGitStatus = vi.fn();
-    const scheduleComposerFocus = vi.fn();
+    const focusComposer = vi.fn();
     const harness = (thread: ThreadInput) => (
       <RestoreBranchHarness
         thread={thread}
         currentRouteThreadKeyRef={currentRouteThreadKeyRef}
         refreshGitStatus={refreshGitStatus}
-        scheduleComposerFocus={scheduleComposerFocus}
+        focusComposer={focusComposer}
       />
     );
     await using screen = await render(harness(threadA));
+    const focusFrames: FrameRequestCallback[] = [];
+    using _frame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      focusFrames.push(callback);
+      return 0;
+    });
 
     await page.getByRole("button", { name: "Restore branch" }).click();
     await expect.element(page.getByRole("button", { name: "Restoring..." })).toBeDisabled();
@@ -154,7 +159,7 @@ it.each(["a", "b"] as const)(
       value: { refName: completed.localCheckoutBranchMismatch.threadBranch },
     });
     await vi.waitFor(() => expect(refreshGitStatus).toHaveBeenCalledOnce());
-    expect(scheduleComposerFocus).not.toHaveBeenCalled();
+    expect(focusComposer).not.toHaveBeenCalled();
     await expect.element(page.getByRole("button", { name: "Restoring..." })).toBeDisabled();
     expect(switchRef).toHaveBeenCalledTimes(2);
 
@@ -164,6 +169,13 @@ it.each(["a", "b"] as const)(
     });
     await expect.element(page.getByRole("button", { name: "Restore branch" })).toBeEnabled();
     expect(refreshGitStatus).toHaveBeenCalledTimes(2);
-    expect(scheduleComposerFocus).toHaveBeenCalledOnce();
+    expect(focusComposer).not.toHaveBeenCalled();
+    expect(focusFrames).toHaveLength(1);
+    if (scenario === "navigation") {
+      currentRouteThreadKeyRef.current = completed.routeThreadKey;
+      await screen.rerender(harness(completed));
+    }
+    focusFrames[0]!(0);
+    expect(focusComposer).toHaveBeenCalledTimes(scenario === "navigation" ? 0 : 1);
   },
 );
