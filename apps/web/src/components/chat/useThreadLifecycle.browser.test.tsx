@@ -104,53 +104,66 @@ function RestoreBranchHarness(props: {
   );
 }
 
-it("keeps a branch restore in one thread from blocking or refocusing the next thread", async () => {
-  setup();
-  const switchRef = vi.fn((_input: unknown) => new Promise<unknown>(() => undefined));
-  let finishThreadA: (result: unknown) => void = () => undefined;
-  switchRef.mockImplementationOnce(
-    () =>
-      new Promise((resolve) => {
-        finishThreadA = resolve;
-      }),
-  );
-  state.switchRef = switchRef;
-  const threadA = threadInput("thread:a", "feature-a");
-  const threadB = threadInput("thread:b", "feature-b");
-  const currentRouteThreadKeyRef = { current: threadA.routeThreadKey };
-  const refreshGitStatus = vi.fn();
-  const scheduleComposerFocus = vi.fn();
-  const harness = (thread: ThreadInput) => (
-    <RestoreBranchHarness
-      thread={thread}
-      currentRouteThreadKeyRef={currentRouteThreadKeyRef}
-      refreshGitStatus={refreshGitStatus}
-      scheduleComposerFocus={scheduleComposerFocus}
-    />
-  );
-  await using screen = await render(harness(threadA));
+it.each(["a", "b"] as const)(
+  "isolates overlapping restores when thread %s finishes first",
+  async (first) => {
+    setup();
+    const completions: Array<(result: unknown) => void> = [];
+    const switchRef = vi.fn(() => new Promise<unknown>((resolve) => completions.push(resolve)));
+    state.switchRef = switchRef;
+    const threadA = threadInput("thread:a", "feature-a");
+    const threadB = threadInput("thread:b", "feature-b");
+    const currentRouteThreadKeyRef = { current: threadA.routeThreadKey };
+    const refreshGitStatus = vi.fn();
+    const scheduleComposerFocus = vi.fn();
+    const harness = (thread: ThreadInput) => (
+      <RestoreBranchHarness
+        thread={thread}
+        currentRouteThreadKeyRef={currentRouteThreadKeyRef}
+        refreshGitStatus={refreshGitStatus}
+        scheduleComposerFocus={scheduleComposerFocus}
+      />
+    );
+    await using screen = await render(harness(threadA));
 
-  await page.getByRole("button", { name: "Restore branch" }).click();
-  await expect.element(page.getByRole("button", { name: "Restoring..." })).toBeDisabled();
+    await page.getByRole("button", { name: "Restore branch" }).click();
+    await expect.element(page.getByRole("button", { name: "Restoring..." })).toBeDisabled();
 
-  // ChatView stays mounted across server threads, so the hook sees thread B in place.
-  currentRouteThreadKeyRef.current = threadB.routeThreadKey;
-  await screen.rerender(harness(threadB));
-  await expect.element(page.getByRole("button", { name: "Restore branch" })).toBeEnabled();
-  await page.getByRole("button", { name: "Restore branch" }).click();
-  expect(switchRef).toHaveBeenLastCalledWith(
-    expect.objectContaining({ input: { cwd: "/repo", refName: "feature-b" } }),
-  );
+    // ChatView stays mounted across server threads, so the hook sees thread B in place.
+    currentRouteThreadKeyRef.current = threadB.routeThreadKey;
+    await screen.rerender(harness(threadB));
+    await expect.element(page.getByRole("button", { name: "Restore branch" })).toBeEnabled();
+    await page.getByRole("button", { name: "Restore branch" }).click();
+    expect(switchRef).toHaveBeenLastCalledWith(
+      expect.objectContaining({ input: { cwd: "/repo", refName: "feature-b" } }),
+    );
 
-  // Back on thread A, its own restore is still pending, so it can't start a second one.
-  currentRouteThreadKeyRef.current = threadA.routeThreadKey;
-  await screen.rerender(harness(threadA));
-  await expect.element(page.getByRole("button", { name: "Restoring..." })).toBeDisabled();
-  currentRouteThreadKeyRef.current = threadB.routeThreadKey;
-  await screen.rerender(harness(threadB));
+    // Back on thread A, its own restore is still pending, so it can't start a second one.
+    currentRouteThreadKeyRef.current = threadA.routeThreadKey;
+    await screen.rerender(harness(threadA));
+    await expect.element(page.getByRole("button", { name: "Restoring..." })).toBeDisabled();
+    currentRouteThreadKeyRef.current = threadB.routeThreadKey;
+    await screen.rerender(harness(threadB));
 
-  finishThreadA({ _tag: "Success", value: { refName: "feature-a" } });
-  await vi.waitFor(() => expect(refreshGitStatus).toHaveBeenCalledOnce());
-  expect(scheduleComposerFocus).not.toHaveBeenCalled();
-  await expect.element(page.getByRole("button", { name: "Restoring..." })).toBeDisabled();
-});
+    const completed = first === "a" ? threadA : threadB;
+    const pending = first === "a" ? threadB : threadA;
+    currentRouteThreadKeyRef.current = pending.routeThreadKey;
+    await screen.rerender(harness(pending));
+    completions[first === "a" ? 0 : 1]!({
+      _tag: "Success",
+      value: { refName: completed.localCheckoutBranchMismatch.threadBranch },
+    });
+    await vi.waitFor(() => expect(refreshGitStatus).toHaveBeenCalledOnce());
+    expect(scheduleComposerFocus).not.toHaveBeenCalled();
+    await expect.element(page.getByRole("button", { name: "Restoring..." })).toBeDisabled();
+    expect(switchRef).toHaveBeenCalledTimes(2);
+
+    completions[first === "a" ? 1 : 0]!({
+      _tag: "Success",
+      value: { refName: pending.localCheckoutBranchMismatch.threadBranch },
+    });
+    await expect.element(page.getByRole("button", { name: "Restore branch" })).toBeEnabled();
+    expect(refreshGitStatus).toHaveBeenCalledTimes(2);
+    expect(scheduleComposerFocus).toHaveBeenCalledOnce();
+  },
+);
