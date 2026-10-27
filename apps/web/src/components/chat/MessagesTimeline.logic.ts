@@ -1332,7 +1332,6 @@ function withoutSubagentDelegationRows(entries: ReadonlyArray<TimelineEntry>) {
 type WorkTimelineEntry = Extract<TimelineEntry, { kind: "work" }>;
 const supersededReasoningEntries = new WeakMap<WorkTimelineEntry, WorkTimelineEntry>();
 
-/** A steer or subsequent activity ends thinking even if the provider omits its completion. */
 function settleReasoning(entry: WorkTimelineEntry, superseded: boolean): WorkTimelineEntry {
   if (
     !superseded ||
