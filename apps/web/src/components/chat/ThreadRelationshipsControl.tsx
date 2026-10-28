@@ -13,6 +13,7 @@ import {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import { deriveProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
+import { latestSubagentBatchRunId } from "@t3tools/client-runtime/state/thread-subagents";
 import {
   deriveThreadRelationshipGraph,
   immediateThreadRelationships,
@@ -381,6 +382,7 @@ export function ThreadRelationshipsPanel(props: {
       ? row
       : { ...row, edge: { ...row.edge, status: workflowGroup.workflow.status } };
   });
+  const latestBatchRunId = projection === null ? null : latestSubagentBatchRunId(projection);
   const canMerge = mergeTargetThreadId !== null && latestMergeBackRun !== null;
   const canDetach = projection ? canDetachThreadProviderSession(projection) : false;
 
@@ -388,14 +390,16 @@ export function ThreadRelationshipsPanel(props: {
     related = [],
     active = [],
     previous = [],
-  } = groupBy(relationshipRows, ({ edge }) => {
+  } = groupBy(relationshipRows, ({ edge, threadId }) => {
     if (edge.kind !== "subagent" || isParentThreadRelationship(edge, props.threadId))
       return "related";
-    return ["completed", "failed", "error", "cancelled", "interrupted", "idle"].includes(
+    const settled = ["completed", "failed", "error", "cancelled", "interrupted", "idle"].includes(
       edge.status ?? "",
-    )
-      ? "previous"
-      : "active";
+    );
+    // The newest batch stays in view after it finishes, until a later turn launches agents.
+    const latestBatch =
+      latestBatchRunId !== null && subagentsByThreadId.get(threadId)?.runId === latestBatchRunId;
+    return settled && !latestBatch ? "previous" : "active";
   });
   const groups = [
     { id: "related", label: null, rows: related, expanded: true },

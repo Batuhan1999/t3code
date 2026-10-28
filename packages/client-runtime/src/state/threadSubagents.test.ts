@@ -9,7 +9,11 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { deriveThreadTurnSubagents, resolveSubagentPillSegment } from "./threadSubagents.ts";
+import {
+  deriveThreadTurnSubagents,
+  latestSubagentBatchRunId,
+  resolveSubagentPillSegment,
+} from "./threadSubagents.ts";
 
 const at = (iso: string) => DateTime.makeUnsafe(iso);
 
@@ -294,5 +298,49 @@ describe("deriveThreadTurnSubagents", () => {
       label: "1 done",
       accessibilityLabel: "1 agent done",
     });
+  });
+});
+
+describe("latestSubagentBatchRunId", () => {
+  it("keeps the newest batch through later turns that launch no agents", () => {
+    expect(
+      latestSubagentBatchRunId({
+        runs: [run("run-1", "completed"), run("run-2", "completed"), run("run-3", "running")],
+        subagents: [subagent({ id: "done", runId: RunId.make("run-1"), status: "completed" })],
+      }),
+    ).toBe("run-1");
+  });
+
+  it("moves to a later turn once it launches agents", () => {
+    expect(
+      latestSubagentBatchRunId({
+        runs: [run("run-1", "completed"), run("run-2", "running")],
+        subagents: [
+          subagent({ id: "old", runId: RunId.make("run-1"), status: "completed" }),
+          subagent({
+            id: "new",
+            runId: RunId.make("run-2"),
+            startedAt: at("2026-06-20T00:01:00.000Z"),
+          }),
+        ],
+      }),
+    ).toBe("run-2");
+  });
+
+  it("skips agents from rolled-back turns", () => {
+    expect(
+      latestSubagentBatchRunId({
+        runs: [run("run-1", "completed"), run("run-2", "rolled_back")],
+        subagents: [
+          subagent({ id: "kept", runId: RunId.make("run-1"), status: "completed" }),
+          subagent({
+            id: "undone",
+            runId: RunId.make("run-2"),
+            startedAt: at("2026-06-20T00:01:00.000Z"),
+          }),
+        ],
+      }),
+    ).toBe("run-1");
+    expect(latestSubagentBatchRunId({ runs: [], subagents: [] })).toBeNull();
   });
 });

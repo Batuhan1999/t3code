@@ -90,6 +90,24 @@ export function deriveThreadTurnSubagents(
   };
 }
 
+/**
+ * The run of the newest subagent launch: its agents stay in view after they finish, until a later
+ * turn launches agents of its own. Turns without agents leave the batch in place.
+ */
+export function latestSubagentBatchRunId(
+  projection: Pick<Projection, "runs" | "subagents">,
+): RunId | null {
+  const rolledBackRunIds = new Set(
+    projection.runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
+  );
+  let latest: Subagent | null = null;
+  for (const subagent of projection.subagents) {
+    if (subagent.runId === null || rolledBackRunIds.has(subagent.runId)) continue;
+    if (latest === null || orderKey(subagent) > orderKey(latest)) latest = subagent;
+  }
+  return latest?.runId ?? null;
+}
+
 export function resolveSubagentPillSegment(
   turn: ThreadTurnSubagents | null,
 ): SubagentPillSegment | null {
