@@ -11529,6 +11529,118 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("does not settle a fork on the launch result its own transcript opens with", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const FORK_TASK_ID = "ac6476039e07efd6d";
+        const FORK_TOOL_USE_ID = "toolu_01LJ35kPNM18tfgTLDCuJMkA";
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const subagentEvents = () =>
+          harness.events.filter(
+            (
+              event,
+            ): event is Extract<
+              ProviderAdapter.ProviderAdapterV2Event,
+              { type: "subagent.updated" }
+            > => event.type === "subagent.updated",
+          );
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-fork-ack"),
+            text: "Fork this.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: FORK_TASK_ID,
+            tool_use_id: FORK_TOOL_USE_ID,
+            description: "Wire #2727 search into eval",
+            subagent_type: "fork",
+            task_type: "local_agent",
+            prompt: "Wire it in.",
+            uuid: "00000000-0000-4000-8000-000000000301",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.until(() => subagentEvents().length === 1);
+
+        // The fork's first frame: the parent's Agent call as the fork sees it.
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "user",
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: FORK_TOOL_USE_ID,
+                  content: [{ type: "text", text: "Fork started \u2014 that fork is you." }],
+                },
+                {
+                  type: "text",
+                  text: "<fork-boilerplate>You are a worker fork.</fork-boilerplate>",
+                },
+              ],
+            },
+            parent_tool_use_id: FORK_TOOL_USE_ID,
+            uuid: "00000000-0000-4000-8000-000000000302",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        // Steering interrupts the foreground fork; that result is the one that settles it.
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "user",
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: FORK_TOOL_USE_ID,
+                  content: "[Request interrupted by user for tool use]",
+                  is_error: true,
+                },
+              ],
+            },
+            parent_tool_use_id: null,
+            uuid: "00000000-0000-4000-8000-000000000303",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.until(() => subagentEvents().at(-1)?.subagent.status !== "running");
+
+        assert.deepEqual(
+          subagentEvents().map((event) => event.subagent.status),
+          [
+            ...subagentEvents()
+              .slice(0, -1)
+              .map(() => "running"),
+            "failed",
+          ],
+        );
+        assert.notInclude(
+          subagentEvents().map((event) => event.subagent.result ?? ""),
+          "Fork started \u2014 that fork is you.",
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("releases the idle pin when a post-settle subagent stops without completing", () =>
     Effect.scoped(
       Effect.gen(function* () {

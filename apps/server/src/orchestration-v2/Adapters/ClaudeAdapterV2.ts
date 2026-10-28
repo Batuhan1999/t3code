@@ -8836,6 +8836,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               subagent !== undefined &&
               findToolCall(context, toolResult.tool_use_id) === undefined
             ) {
+              // A fork's transcript opens with its own view of the launch ("Fork started"); only
+              // the parent's result for that call settles it.
+              if (parentToolUseIdFromSdkMessage(message) === toolResult.tool_use_id) {
+                continue;
+              }
               // Background Agent launches ACK immediately; only task_notification settles them.
               if (
                 !isClaudeToolResultError(toolResult) &&
