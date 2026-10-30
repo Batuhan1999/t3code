@@ -77,6 +77,7 @@ function RestoreBranchHarness(props: {
     runtimeMode: "full-access" as never,
     isWorking: false,
     pendingBackgroundTasks: [],
+    turnItems: [],
     activePendingApproval: null as never,
     activePendingUserInput: null as never,
     gitStatusQuery: { refresh: props.refreshGitStatus },
